@@ -6,7 +6,7 @@ using System.Linq;
 
 // =================== Configuração ===================
 // Iterações elevadas deixam o trabalho realmente pesado (CPU-bound).
-const int PBKDF2_ITERATIONS = 50_000;
+const int PBKDF2_ITERATIONS = 5;
 const int HASH_BYTES = 32; // 32 = 256 bits
 const string CSV_URL = "https://www.gov.br/receitafederal/dados/municipios.csv";
 const string OUT_DIR_NAME = "mun_hash_por_uf";
@@ -101,7 +101,7 @@ foreach (var uf in ufsOrdenadas)
     {
         swOut.WriteLine("TOM;IBGE;NomeTOM;NomeIBGE;UF;Hash");
 
-        var processor = new Processor<Municipio, (Municipio m, string hash)>(listaUf);
+        var processor = new TaskQueue<Municipio, (Municipio m, string hash)>(listaUf);
         var results = await processor.ProcessListAsync(async (m) =>
         {
             string password = m.ToConcatenatedString();

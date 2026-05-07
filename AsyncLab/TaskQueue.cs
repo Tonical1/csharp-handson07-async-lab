@@ -1,8 +1,8 @@
-﻿public class Processor<TInput, TResult>
+﻿public class TaskQueue<TInput, TResult>
 {
     private readonly IEnumerable<TInput> items;
 
-    public Processor(IEnumerable<TInput> items)
+    public TaskQueue(IEnumerable<TInput> items)
     {
         this.items = items;
     }
