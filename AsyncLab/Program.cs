@@ -9,7 +9,7 @@ using System.Text.Json;
 
 // =================== Configuração ===================
 // Iterações elevadas deixam o trabalho realmente pesado (CPU-bound).
-const int PBKDF2_ITERATIONS = 1;
+const int PBKDF2_ITERATIONS = 50_000;
 const int HASH_BYTES = 32; // 32 = 256 bits
 const string CSV_URL = "https://www.gov.br/receitafederal/dados/municipios.csv";
 const string OUT_DIR_NAME = "mun_hash_por_uf";
@@ -168,7 +168,7 @@ Console.WriteLine("===== RESUMO =====");
 Console.WriteLine($"UFs geradas: {ufsOrdenadas.Count} Com {PBKDF2_ITERATIONS} Iterações");
 Console.WriteLine($"Pasta de saída: {outRoot}");
 
-Console.ForegroundColor = ConsoleColor.Red;
+Console.ForegroundColor = ConsoleColor.Yellow;
 Console.WriteLine($"\nTempo total: \t{FormatTempo(swTotal.ElapsedMilliseconds)} ({swTotal.Elapsed})");
 
 Console.ForegroundColor = ConsoleColor.Green;

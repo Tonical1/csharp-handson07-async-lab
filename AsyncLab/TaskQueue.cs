@@ -7,10 +7,7 @@
         this.items = items;
     }
 
-    public async Task<List<TResult>> ProcessListAsync(
-        Func<TInput, Task<TResult>> asyncFunc,
-        int maxActive = 4)
-    {
+    public async Task<List<TResult>> ProcessListAsync(Func<TInput, Task<TResult>> asyncFunc, int maxActive = 4) {
         var semaphore = new SemaphoreSlim(maxActive);
         var tasks = new List<Task<TResult>>();
 
