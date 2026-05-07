@@ -9,7 +9,7 @@ using System.Text.Json;
 
 // =================== Configuração ===================
 // Iterações elevadas deixam o trabalho realmente pesado (CPU-bound).
-const int PBKDF2_ITERATIONS = 50_000;
+const int PBKDF2_ITERATIONS = 1;
 const int HASH_BYTES = 32; // 32 = 256 bits
 const string CSV_URL = "https://www.gov.br/receitafederal/dados/municipios.csv";
 const string OUT_DIR_NAME = "mun_hash_por_uf";
@@ -20,7 +20,7 @@ string FormatTempo(long ms)
     return $"{ts.Minutes}m {ts.Seconds}s {ts.Milliseconds}ms";
 }
 
-var sw = Stopwatch.StartNew();
+var swTotal = Stopwatch.StartNew();
 
 string baseDir = Directory.GetCurrentDirectory();
 string tempCsvPath = Path.Combine(baseDir, "municipios.csv");
@@ -32,6 +32,8 @@ using (var wc = new WebClient())
     wc.Encoding = Encoding.UTF8; // ajuste para ISO-8859-1 se necessário
     wc.DownloadFile(CSV_URL, tempCsvPath);
 }
+
+var swRead = Stopwatch.StartNew();
 
 Console.WriteLine("Lendo e parseando o CSV ...");
 var linhas = File.ReadAllLines(tempCsvPath, Encoding.UTF8);
@@ -89,7 +91,7 @@ var ufsOrdenadas = porUf.Keys
 Directory.CreateDirectory(outRoot);
 Console.WriteLine("Calculando hash por município e gerando arquivos por UF ...");
 
-var queue = new QueueCreator(Environment.ProcessorCount+2);
+var queue = new QueueCreator(Environment.ProcessorCount);
 var ufResults = new ConcurrentDictionary<string, ConcurrentBag<(Municipio m, string hash)>>();
 var allTasks = new List<Task>();
 
@@ -104,7 +106,6 @@ await AnsiConsole.Progress().Columns(new ProgressColumn[]
     .StartAsync(async ctx =>
     {
         var progressMap = new Dictionary<string, ProgressTask>();
-
         foreach (var uf in ufsOrdenadas)
         {
             var listaUf = porUf[uf];
@@ -145,10 +146,10 @@ await AnsiConsole.Progress().Columns(new ProgressColumn[]
                     finally {
                         tcs.SetResult();
 
-                        if (progressMap[uf].Value%25==0)
+                        if (progressMap[uf].Value%25==0 || progressMap[uf].Value==progressMap[uf].MaxValue)
                         {
                             progressMap[uf].Description =
-                                $"\t[white]{uf}[/] [yellow]{progressMap[uf].ElapsedTime?.TotalMilliseconds:F0} ms[/]";
+                                $"\t[white]{uf}[/] [blue]{progressMap[uf].ElapsedTime?.TotalMilliseconds:F0} ms[/]";
                         }
                     }
                     await Task.CompletedTask;
@@ -160,9 +161,17 @@ await AnsiConsole.Progress().Columns(new ProgressColumn[]
 
 queue.Dispose();
 
-sw.Stop();
+swTotal.Stop();
+swRead.Stop();
 Console.WriteLine();
 Console.WriteLine("===== RESUMO =====");
-Console.WriteLine($"UFs geradas: {ufsOrdenadas.Count}");
+Console.WriteLine($"UFs geradas: {ufsOrdenadas.Count} Com {PBKDF2_ITERATIONS} Iterações");
 Console.WriteLine($"Pasta de saída: {outRoot}");
-Console.WriteLine($"Tempo total: {FormatTempo(sw.ElapsedMilliseconds)} ({sw.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Red;
+Console.WriteLine($"\nTempo total: \t{FormatTempo(swTotal.ElapsedMilliseconds)} ({swTotal.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Green;
+Console.WriteLine($"\nTempo leitura: \t{FormatTempo(swRead.ElapsedMilliseconds)} ({swRead.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Gray;
