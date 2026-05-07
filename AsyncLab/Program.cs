@@ -1,12 +1,15 @@
-﻿using System.Diagnostics;
+﻿using Spectre.Console;
+using System.Collections;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Linq;
 
 // =================== Configuração ===================
 // Iterações elevadas deixam o trabalho realmente pesado (CPU-bound).
-const int PBKDF2_ITERATIONS = 5;
+const int PBKDF2_ITERATIONS = 50_000;
 const int HASH_BYTES = 32; // 32 = 256 bits
 const string CSV_URL = "https://www.gov.br/receitafederal/dados/municipios.csv";
 const string OUT_DIR_NAME = "mun_hash_por_uf";
@@ -17,7 +20,7 @@ string FormatTempo(long ms)
     return $"{ts.Minutes}m {ts.Seconds}s {ts.Milliseconds}ms";
 }
 
-var sw = Stopwatch.StartNew();
+var swTotal = Stopwatch.StartNew();
 
 string baseDir = Directory.GetCurrentDirectory();
 string tempCsvPath = Path.Combine(baseDir, "municipios.csv");
@@ -29,6 +32,8 @@ using (var wc = new WebClient())
     wc.Encoding = Encoding.UTF8; // ajuste para ISO-8859-1 se necessário
     wc.DownloadFile(CSV_URL, tempCsvPath);
 }
+
+var swRead = Stopwatch.StartNew();
 
 Console.WriteLine("Lendo e parseando o CSV ...");
 var linhas = File.ReadAllLines(tempCsvPath, Encoding.UTF8);
@@ -86,71 +91,87 @@ var ufsOrdenadas = porUf.Keys
 Directory.CreateDirectory(outRoot);
 Console.WriteLine("Calculando hash por município e gerando arquivos por UF ...");
 
-foreach (var uf in ufsOrdenadas)
-{
-    var listaUf = porUf[uf];
+var queue = new QueueCreator(Environment.ProcessorCount);
+var ufResults = new ConcurrentDictionary<string, ConcurrentBag<(Municipio m, string hash)>>();
+var allTasks = new List<Task>();
 
-    // Ordena por Nome preferido para saída consistente
-    listaUf.Sort((a, b) => string.Compare(a.NomePreferido, b.NomePreferido, StringComparison.OrdinalIgnoreCase));
-
-    Console.WriteLine($"Processando UF: {uf} ({listaUf.Count} municípios)");
-    var swUf = Stopwatch.StartNew();
-    string outPath = Path.Combine(outRoot, $"municipios_hash_{uf}.csv");
-    using (var fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None))
-    using (var swOut = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+// Novo console com progresso dinamico
+await AnsiConsole.Progress().Columns(new ProgressColumn[]
     {
-        swOut.WriteLine("TOM;IBGE;NomeTOM;NomeIBGE;UF;Hash");
-
-        var processor = new TaskQueue<Municipio, (Municipio m, string hash)>(listaUf);
-        var results = await processor.ProcessListAsync(async (m) =>
+        new TaskDescriptionColumn(),
+        new ProgressBarColumn(),
+        new PercentageColumn(),
+        new SpinnerColumn(),
+    })
+    .StartAsync(async ctx =>
+    {
+        var progressMap = new Dictionary<string, ProgressTask>();
+        foreach (var uf in ufsOrdenadas)
         {
-            string password = m.ToConcatenatedString();
-            byte[] salt = Util.BuildSalt(m.Ibge);
+            var listaUf = porUf[uf];
 
-            string hashHex = Util.DeriveHashHex(password, salt, PBKDF2_ITERATIONS, HASH_BYTES);
+            listaUf.Sort((a, b) =>
+                string.Compare(
+                    a.NomePreferido,
+                    b.NomePreferido,
+                    StringComparison.OrdinalIgnoreCase));
 
-            return (m, hashHex);
-        }, Environment.ProcessorCount);
+            ufResults[uf] = new ConcurrentBag<(Municipio, string)>();
 
+            progressMap[uf] = ctx.AddTask(
+                $"\t[white]{uf}[/] [yellow]000 ms[/]",
+                maxValue: listaUf.Count);
 
-        var listaJson = new List<object>();
-        int count = 0;
-        foreach (var item in results.OrderBy(x => x.m.NomePreferido))
-        {
-            var m = item.m;
-            var hashHex = item.hash;
-
-            swOut.WriteLine($"{m.Tom};{m.Ibge};{m.NomeTom};{m.NomeIbge};{m.Uf};{hashHex}");
-
-            listaJson.Add(new
+            foreach (var m in listaUf)
             {
-                m.Tom,
-                m.Ibge,
-                m.NomeTom,
-                m.NomeIbge,
-                m.Uf,
-                Hash = hashHex
-            });
+                var tcs = new TaskCompletionSource();
+                allTasks.Add(tcs.Task);
 
-            count++;
-            if (count % 50 == 0 || count == results.Count)
-            {
-                Console.WriteLine($"  Parcial: {count}/{results.Count} municípios processados para UF {uf} | Tempo parcial: {FormatTempo(swUf.ElapsedMilliseconds)}");
+                queue.AddToQueue(async () =>
+                {
+                    try {
+                        string password = m.ToConcatenatedString();
+                        byte[] salt = Util.BuildSalt(m.Ibge);
+
+                        string hashHex = Util.DeriveHashHex(
+                            password,
+                            salt,
+                            PBKDF2_ITERATIONS,
+                            HASH_BYTES);
+
+                        ufResults[uf].Add((m, hashHex));
+                        progressMap[uf].Increment(1);
+
+                    }
+                    finally {
+                        tcs.SetResult();
+
+                        if (progressMap[uf].Value%25==0 || progressMap[uf].Value==progressMap[uf].MaxValue)
+                        {
+                            progressMap[uf].Description =
+                                $"\t[white]{uf}[/] [blue]{progressMap[uf].ElapsedTime?.TotalMilliseconds:F0} ms[/]";
+                        }
+                    }
+                    await Task.CompletedTask;
+                });
             }
         }
+        await Task.WhenAll(allTasks);
+    });
 
-        // Salva JSON
-        string jsonPath = Path.Combine(outRoot, $"municipios_hash_{uf}.json");
-        var json = JsonSerializer.Serialize(listaJson, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(jsonPath, json, Encoding.UTF8);
-        swUf.Stop();
-        Console.WriteLine($"UF {uf} concluída. Arquivos gerados: CSV e JSON. Tempo total UF: {FormatTempo(swUf.ElapsedMilliseconds)}");
-    }
-}
+queue.Dispose();
 
-sw.Stop();
+swTotal.Stop();
+swRead.Stop();
 Console.WriteLine();
 Console.WriteLine("===== RESUMO =====");
-Console.WriteLine($"UFs geradas: {ufsOrdenadas.Count}");
+Console.WriteLine($"UFs geradas: {ufsOrdenadas.Count} Com {PBKDF2_ITERATIONS} Iterações");
 Console.WriteLine($"Pasta de saída: {outRoot}");
-Console.WriteLine($"Tempo total: {FormatTempo(sw.ElapsedMilliseconds)} ({sw.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Yellow;
+Console.WriteLine($"\nTempo total: \t{FormatTempo(swTotal.ElapsedMilliseconds)} ({swTotal.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Green;
+Console.WriteLine($"\nTempo leitura: \t{FormatTempo(swRead.ElapsedMilliseconds)} ({swRead.Elapsed})");
+
+Console.ForegroundColor = ConsoleColor.Gray;
