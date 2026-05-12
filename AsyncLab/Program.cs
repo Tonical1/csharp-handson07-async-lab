@@ -89,7 +89,7 @@ var ufsOrdenadas = porUf.Keys
 
 // Gera saída
 Directory.CreateDirectory(outRoot);
-Console.WriteLine("Calculando hash por município e gerando arquivos por UF ...");
+Console.WriteLine($"Calculando hash por município e gerando arquivos por UF, ProcessorCount: {Environment.ProcessorCount}");
 
 var queue = new QueueCreator(Environment.ProcessorCount);
 var ufResults = new ConcurrentDictionary<string, ConcurrentBag<(Municipio m, string hash)>>();
